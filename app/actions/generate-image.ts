@@ -1,6 +1,13 @@
 "use server"
 
+import OpenAI from "openai"
 import Replicate from "replicate"
+// Note: We dynamically import FormData and node-fetch when needed
+// This is to avoid issues with Next.js server components
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY as string,
+})
 
 const replicate = new Replicate({
   auth: process.env.REPLICATE_API_TOKEN as string,
@@ -8,20 +15,20 @@ const replicate = new Replicate({
 
 // Available aspect ratios with their corresponding dimensions
 const aspectRatios = {
-  "1:1": { width: 1024, height: 1024 },
-  "16:9": { width: 1536, height: 864 },
-  "9:16": { width: 864, height: 1536 },
-  "3:4": { width: 896, height: 1152 },
-  "4:3": { width: 1152, height: 896 },
-  "2:3": { width: 832, height: 1216 },
-  "3:2": { width: 1216, height: 832 }
+  "1:1": { width: 1024, height: 1024, size: "1024x1024" },
+  "16:9": { width: 1536, height: 864, size: "1536x1024" },
+  "9:16": { width: 864, height: 1536, size: "1024x1536" },
+  "3:4": { width: 896, height: 1152, size: "1024x1536" },
+  "4:3": { width: 1152, height: 896, size: "1536x1024" },
+  "2:3": { width: 832, height: 1216, size: "1024x1536" },
+  "3:2": { width: 1216, height: 832, size: "1536x1024" }
 };
 
 // Export the AspectRatio type so it can be imported in the client component
 export type AspectRatio = keyof typeof aspectRatios;
 
 /**
- * Generate multiple images in parallel using the 'ideogram-ai/ideogram-v2-turbo' model.
+ * Generate multiple images in parallel using the OpenAI GPT-Image-1 model.
  * This function accepts a text prompt and an aspect ratio, returning up to 4 generated images.
  */
 export async function generateImages(
@@ -34,31 +41,35 @@ export async function generateImages(
   error?: string 
 }> {
   try {
-    if (!process.env.REPLICATE_API_TOKEN) {
-      throw new Error("REPLICATE_API_TOKEN is not configured")
+    if (!process.env.OPENAI_API_KEY) {
+      throw new Error("OPENAI_API_KEY is not configured")
     }
 
     console.log(`Starting image generation with prompt: "${prompt}" and aspect ratio: ${aspectRatio}`)
     
-    // Generate predictions in parallel (up to the requested number)
-    const predictionPromises = Array(Math.min(numberOfImages, 4)).fill(null).map(() => 
-      replicate.run("ideogram-ai/ideogram-v2-turbo", {
-        input: {
-          prompt: prompt,
-          aspect_ratio: aspectRatio, // Use aspect_ratio directly as per the documentation
-          negative_prompt: "low quality, bad anatomy, blurry, pixelated"
-        },
-      })
-    );
-
-    const predictions = await Promise.all(predictionPromises);
-    console.log("Generation outputs:", predictions)
-
-    // Flatten the array of results and ensure they're strings
-    const imageUrls = predictions
-      .flat()
-      .filter(Boolean)
-      .map((url) => String(url));
+    // Get the size parameter based on the aspect ratio
+    const size = aspectRatios[aspectRatio].size
+    
+    // Generate predictions for the specified number of images (up to 4)
+    // TypeScript definitions don't match actual gpt-image-1 supported parameters
+    const result = await openai.images.generate({
+      model: "gpt-image-1",
+      prompt: prompt,
+      n: Math.min(numberOfImages, 4),
+      size: size as any, // gpt-image-1 supports different sizes than the type definition
+      quality: "high" as any, // gpt-image-1 supports "high" quality
+      // Note: We're using b64_json by default which is what GPT-Image-1 returns
+    } as any)
+    
+    console.log("Generation complete, received results")
+    
+    // Extract base64 image data and convert to data URLs
+    const imageUrls = result.data.map(image => {
+      if (image.b64_json) {
+        return `data:image/png;base64,${image.b64_json}`
+      }
+      return ""
+    }).filter(Boolean)
 
     if (imageUrls.length === 0) {
       throw new Error("No images were generated")
@@ -90,8 +101,7 @@ export async function generateImages(
 export async function inpaintImage(
   prompt: string,
   base64Image: string,
-  maskImage: string,
-  aspectRatio: AspectRatio = "1:1"
+  maskImage: string
 ): Promise<{
   success: boolean
   image?: string
@@ -102,7 +112,7 @@ export async function inpaintImage(
       throw new Error("REPLICATE_API_TOKEN is not configured")
     }
 
-    console.log(`Starting inpainting with prompt: "${prompt}" and aspect ratio: ${aspectRatio}`)
+    console.log("Starting inpainting with prompt:", prompt)
 
     // Verify we have valid data URLs
     if (!base64Image.startsWith('data:image/')) {
@@ -112,6 +122,7 @@ export async function inpaintImage(
       throw new Error("Invalid mask format: must be a data URL")
     }
 
+    // The safer way is to upload these images first, then use the URLs
     try {
       // Create the prediction with the full prediction API
       const prediction = await replicate.predictions.create({
@@ -120,7 +131,6 @@ export async function inpaintImage(
           prompt: prompt,
           image: base64Image,
           mask: maskImage,
-          aspect_ratio: aspectRatio, // Use aspect_ratio directly as per the documentation
           negative_prompt: "low quality, bad anatomy, blurry, pixelated",
           style_type: "General"
         },
