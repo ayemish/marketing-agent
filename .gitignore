@@ -24,6 +24,8 @@ yarn-error.log*
 .pnpm-debug.log*
 
 # local env files
+.env
+.env.*
 .env.development.local
 .env.test.local
 .env.production.local
@@ -35,3 +37,4 @@ yarn-error.log*
 .vscode
 .env*.local
 config.bat
+*.tsbuildinfo
